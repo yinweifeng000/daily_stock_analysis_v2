@@ -423,18 +423,88 @@ IPO专项要求：
 """
 
 
-def build_prompt() -> str:
-    header = (
-        f"今天是 {GEN_DATETIME_CN}，明天是 {NEXT_DATE}。这是一次 A 股开盘前的清晨扫描，"
-        "请以当前实际时间为基准，立即开始联网检索「昨天收盘后到此刻」的最新数据与事件。\n"
-        "输出要求：用中文 Markdown 输出报告正文（不要用代码块包裹），严格按任务说明中「十一、最终报告格式」"
-        "的结构输出。**每条事件/数据必须附真实可点击的来源链接（[标题](URL) 格式），禁止虚构或占位链接；"
-        "所有方向判断必须三选一给出明确结论，绝不并排罗列选项；每个因子必须有至少 2 个具体数字。"
-        "整份报告不少于 3000 字，宁可少写因子也不写空话。**\n"
-        "以下是完整的扫描任务说明：\n\n"
-        "# 全球重大事件与资金流向深度扫描提示词（防遗漏增强版）\n"
+# ---------- 聚焦分段调用：小模型单次任务越聚焦，产出越真实（第3轮调优） ----------
+
+STATUS_RULES = (
+    "状态标注四选一：【已确认】官方公告/监管文件/已发生事实；【高可信预期】多家可靠媒体报道或明确日程；"
+    "【单一来源消息】仅一个来源待核实；【市场传闻】未经证实。禁止把媒体预测标成已确认。"
+)
+
+HARD_RULES = (
+    "硬性禁令：\n"
+    "1. 方向判断只能写「偏多」「偏空」「中性」三者之一，禁止罗列多个选项。\n"
+    "2. 每个因子必须包含至少 2 个具体数字（当前值/预期值/前值/金额/日期）。\n"
+    "3. 来源链接必须直达具体文章/公告/数据页面，禁止用网站首页冒充。\n"
+    "4. 全文禁止出现 ``` 代码围栏。\n"
+    "5. 所有事件与数字必须来自本次联网检索；检索不到的事件宁可不写，禁止编造。\n"
+    "6. 所有日期必须与今天/明天/未来两周一致，禁止出现矛盾日期。"
+)
+
+CARD_TEMPLATE = (
+    "每个因子严格按照以下多行卡片输出（「」为占位符，输出时必须替换为检索到的真实内容，禁止残留占位符）：\n"
+    "### 1.【已确认】「事件标题：必须包含核心数字或具体事件名」\n"
+    "- **数据支撑**：「数字1」（预期「数字2」，前值「数字3」）；「数字4」（「发布时间+时区」）\n"
+    "- **方向判断**：偏多 ——「一句话：为什么影响今天或明天的行情」\n"
+    "- **A股传导路径**：「资金从哪里流出 → 流向哪些具体板块/代表性公司」\n"
+    "- **验证信号**：「信号A出现则判断成立」；「信号B出现则判断作废」\n"
+    "- **来源**：[「页面标题」](「直达具体文章/公告的URL」)"
+)
+
+SEARCH_CHECKLIST = (
+    "检索方向清单（每类至少检索一轮）：A.宏观与央行（美联储/中国经济数据与政策）；"
+    "B.AI与科技资本开支（OpenAI/英伟达/国内算力链/AI公司IPO）；C.IPO并购融资；"
+    "D.地缘冲突（俄乌/中东/中美关税）；E.产业政策监管；F.能源资源供应链（原油/稀土/航运）；"
+    "G.重要财报与产业会议；H.市场结构与资金面（北向资金/两融/汇率）。"
+)
+
+def build_overnight_prompt() -> str:
+    return (
+        f"现在是 {GEN_DATETIME_CN}。你是财经数据助手。请用联网搜索逐项查询以下 10 个指标"
+        "「最近一次收盘/最新报价」（可多次检索，关键词示例：「道琼斯指数 昨日收盘」「10年期美债收益率 最新」"
+        "「离岸人民币 最新」「A50期货 夜盘」等），然后以 Markdown 表格输出，列：指标 | 最新值 | 涨跌幅 | 数据时间（注明时区）。\n"
+        "10 项指标：道琼斯指数、纳斯达克指数、标普500、10年期美债收益率、美元指数、离岸人民币兑美元、"
+        "布伦特原油、COMEX黄金、富时中国A50期货、恒生指数夜期。\n"
+        "要求：能检索到几项就填几项，全部要有真实数字；个别指标实在检索不到就在「最新值」写「未检索到」，"
+        "禁止编造数字；只输出表格本身，不要输出任何其他文字。"
     )
-    return header + PROMPT_CORE
+
+def build_today_prompt(overnight_md: str) -> str:
+    return (
+        f"现在是 {GEN_DATETIME_CN}，明天是 {NEXT_DATE}，此刻是 A 股开盘前。"
+        "你是全球宏观与 A 股策略研究团队（宏观分析师/央行研究员/交易员/地缘分析师/AI产业链研究员/A股资金行为研究员）。\n"
+        f"{SEARCH_CHECKLIST}\n"
+        f"{STATUS_RULES}\n"
+        f"{CARD_TEMPLATE}\n"
+        f"{HARD_RULES}\n\n"
+        "以下是刚检索到的隔夜与盘前数据，可直接引用其中的数字：\n\n"
+        f"{overnight_md}\n\n"
+        f"任务：联网检索「昨天 A 股收盘后到此刻」发生的、会影响**今天（{GEN_DATE}）A 股走势**的事件与数据"
+        "（隔夜市场联动、政策、宏观数据、公司公告、地缘、AI产业链等），输出 6—10 个因子卡片。"
+        "已确认因子排前面，按重要性排序。只输出因子卡片本身，不要输出其他章节或前言。"
+    )
+
+def build_nextday_prompt(overnight_md: str) -> str:
+    return (
+        f"现在是 {GEN_DATETIME_CN}，明天是 {NEXT_DATE}。"
+        "你是全球宏观与 A 股策略研究团队（宏观分析师/央行研究员/交易员/地缘分析师/AI产业链研究员）。\n"
+        f"{SEARCH_CHECKLIST}\n"
+        f"{STATUS_RULES}\n"
+        f"{CARD_TEMPLATE}\n"
+        f"{HARD_RULES}\n\n"
+        "以下是隔夜与盘前数据，可参考其中的数字：\n\n"
+        f"{overnight_md}\n\n"
+        f"任务：联网检索未来 1—14 天已排期或大概率发生的事件（央行会议、经济数据发布、财报、IPO、"
+        "产业会议、监管节点、地缘事件），依次输出以下四个部分：\n\n"
+        f"## 影响【明日（{NEXT_DATE}）】走势的因子\n"
+        "6—10 个因子卡片，格式同上。\n\n"
+        "## 未来14天重要事件日历\n"
+        "Markdown 表格（列：北京时间 | 事件 | 状态 | 方向 | 评分(0-100)），8—15 条；"
+        "评分必须按真实重要性区分（如 90/75/60/45），禁止全部相同；日期不确定的标注「日期待定」。\n\n"
+        "## 高影响但低确定性事件\n"
+        "0—5 条，每条写明：事件是什么/目前有哪些证据/需要监控什么条件/下一次核实时间。\n\n"
+        "## 本轮最容易被忽略的三个事件\n"
+        "分别回答：是什么/为什么容易漏掉/接下来如何验证。"
+    )
 
 
 def call_gemini(prompt: str) -> str:
@@ -503,12 +573,11 @@ def _zhipu_request(url: str, body: dict, key: str) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def call_zhipu(prompt: str) -> str:
+def call_zhipu(prompt: str, search_query: str) -> str:
     """调用智谱 GLM-4-Flash（OpenAI 兼容接口），使用其内置 web_search 工具做实时联网检索。"""
     if not ZHIPU_KEY:
         raise RuntimeError("未配置 ZHIPU_API_KEY，无法调用智谱模型。请在仓库 Secrets 中配置。")
     url = f"{ZHIPU_BASE_URL}/chat/completions"
-    search_query = f"{GEN_DATE} 全球宏观 央行政策 AI IPO 地缘政治 资金流向 大宗商品 A股"
     body = {
         "model": ZHIPU_MODEL,
         "messages": [{"role": "user", "content": prompt}],
@@ -727,21 +796,61 @@ def main() -> int:
         print("[global_scan] 未配置 ZHIPU_API_KEY 或 GEMINI_API_KEY，无法生成报告。", file=sys.stderr)
         return 1
     print(f"[global_scan] 开始生成 {GEN_DATE} 全球事件扫描报告，提供方={provider}，模型={model_name}")
-    try:
+
+    def _gen(prompt: str, search_query: str) -> str:
+        """单步生成：优先智谱（web_search），失败且有 Gemini key 时本节回退 Gemini。"""
         if ZHIPU_KEY:
             try:
-                report = call_zhipu(build_prompt())
+                return call_zhipu(prompt, search_query)
             except Exception as e:  # noqa: BLE001
                 if GEMINI_KEY:
-                    print(f"[global_scan] 智谱调用失败，回退 Gemini: {e}", file=sys.stderr)
-                    report = call_gemini(build_prompt())
-                else:
-                    raise
-        else:
-            report = call_gemini(build_prompt())
+                    print(f"[global_scan] 智谱失败，本节回退 Gemini: {e}", file=sys.stderr)
+                    return call_gemini(prompt)
+                raise
+        return call_gemini(prompt)
+
+    # Step 1：隔夜与盘前关键数据（聚焦检索，单独一次调用，避免模型偷懒跳过）
+    try:
+        overnight_md = _gen(
+            build_overnight_prompt(),
+            "美股收盘 道琼斯 纳斯达克 标普500 10年期美债收益率 美元指数 离岸人民币 原油 黄金 A50期货 恒生夜期 最新",
+        ).strip()
+        print(f"[global_scan] 隔夜数据获取成功（{len(overnight_md)} 字）")
     except Exception as e:  # noqa: BLE001
-        print(f"[global_scan] 生成失败: {e}", file=sys.stderr)
-        return 1
+        print(f"[global_scan] 隔夜数据获取失败（继续后续步骤）: {e}", file=sys.stderr)
+        overnight_md = "（隔夜数据获取失败，请在因子卡片中基于自行检索补充具体数据）"
+
+    # Step 2：今日因子
+    try:
+        today_md = _gen(
+            build_today_prompt(overnight_md),
+            f"{GEN_DATE} 今日A股 盘前 最新消息 政策公告 北向资金 隔夜美股",
+        ).strip()
+        print(f"[global_scan] 今日因子生成成功（{len(today_md)} 字）")
+    except Exception as e:  # noqa: BLE001
+        print(f"[global_scan] 今日因子生成失败（继续后续步骤）: {e}", file=sys.stderr)
+        today_md = "（本节生成失败）"
+
+    # Step 3：明日因子 + 未来两周日历 + 低确定性事件
+    try:
+        nextday_md = _gen(
+            build_nextday_prompt(overnight_md),
+            f"{NEXT_DATE} 未来一周 央行议息 经济数据发布 财报 IPO 产业会议 地缘",
+        ).strip()
+        print(f"[global_scan] 明日因子与日历生成成功（{len(nextday_md)} 字）")
+    except Exception as e:  # noqa: BLE001
+        print(f"[global_scan] 明日因子与日历生成失败（继续后续步骤）: {e}", file=sys.stderr)
+        nextday_md = "（本节生成失败）"
+
+    report = (
+        f"# 全球事件与资金流向扫描 · {GEN_DATE}\n\n"
+        "## 一、隔夜与盘前关键数据\n\n"
+        f"{overnight_md}\n\n"
+        f"## 二、影响【今日 {GEN_DATE}】走势的因子\n\n"
+        f"{today_md}\n\n"
+        f"## 三、影响【明日 {NEXT_DATE}】走势的因子与未来两周日历\n\n"
+        f"{nextday_md}\n"
+    )
 
     out_dir = "global_scan"
     os.makedirs(out_dir, exist_ok=True)
