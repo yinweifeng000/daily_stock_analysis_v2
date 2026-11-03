@@ -1,0 +1,49 @@
+name: PushPlus Test
+
+# 诊断专用：对照实验定位微信推送失败原因。用完删除。
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PushPlus 对照实验
+        env:
+          TP: ${{ secrets.PUSHPLUS_TOKEN }}
+          TPIC: ${{ secrets.PUSHPLUS_TOPIC }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.request
+
+          token = (os.environ.get('TP') or '').strip()
+          topic = (os.environ.get('TPIC') or '').strip()
+          print('token_len:', len(token), '| topic_len:', len(topic))
+
+          def send(label, payload):
+              if topic:
+                  payload['topic'] = topic
+              req = urllib.request.Request(
+                  'https://www.pushplus.plus/send',
+                  data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+                  headers={'Content-Type': 'application/json'})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      print(label, '->', r.read().decode('utf-8'))
+              except Exception as e:
+                  print(label, '-> EXCEPTION:', e)
+
+          # 实验1：最简内容（验证 token/topic 本身）
+          send('TEST1-minimal', {
+              'token': token, 'title': 'PushPlus测试1-纯文本',
+              'content': '这是一条最简测试消息', 'template': 'html'})
+
+          # 实验2：与 policy_scan 新排版相同的 HTML 样式片段
+          html = ('<div style="font-family:-apple-system;font-size:15px;color:#1a1a1a;">'
+                  '<p style="margin:8px 0;">测试 <b>加粗</b> 与 '
+                  '<a href="https://example.com" style="color:#4dabf7;text-decoration:none;'
+                  'border-bottom:1px solid #4dabf7;">链接样式</a></p></div>')
+          send('TEST2-styled-html', {
+              'token': token, 'title': 'PushPlus测试2-新排版HTML',
+              'content': html, 'template': 'html'})
+          EOF
