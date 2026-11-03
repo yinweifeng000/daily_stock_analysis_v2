@@ -661,7 +661,14 @@ def call_ghm(prompt: str, max_tokens: int = 4000) -> str:
                 "Accept": "application/vnd.github+json",
             })
             with urllib.request.urlopen(req, timeout=300) as resp:
-                obj = json.loads(resp.read().decode("utf-8"))
+                raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                # 诊断：把实际返回的状态码/内容类型/响应体前 300 字符打出来，便于定位端点问题
+                ctype = resp.headers.get("Content-Type", "")
+                print(f"[global_scan] GitHub Models 非JSON响应: status={resp.status} type={ctype} body={raw[:300]!r}", file=sys.stderr)
+                raise
             text = (((obj.get("choices") or [{}])[0].get("message", {}) or {}).get("content") or "").strip()
             if text:
                 print(f"[global_scan] GitHub Models {GHM_MODEL} 生成成功（{len(text)} 字）")
