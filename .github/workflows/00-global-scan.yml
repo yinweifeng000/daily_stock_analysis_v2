@@ -36,6 +36,9 @@ jobs:
           GEMINI_BASE_URL: ${{ vars.GEMINI_BASE_URL }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
+          # GitHub Models（免费 GPT-4o，负责深度综合分析）
+          GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN }}
+          GH_MODELS_MODEL: ${{ vars.GH_MODELS_MODEL || 'openai/gpt-4o' }}
         run: python global_scan.py
 
       - name: 上传报告产物（失败也可查）
