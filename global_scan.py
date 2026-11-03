@@ -47,10 +47,7 @@ ZHIPU_KEY = (os.environ.get("ZHIPU_API_KEY") or "").strip()
 ZHIPU_MODEL = (os.environ.get("ZHIPU_MODEL") or "glm-4-flash").strip()
 ZHIPU_BASE_URL = (os.environ.get("ZHIPU_BASE_URL") or "https://open.bigmodel.cn/api/paas/v4").strip().rstrip("/")
 
-# GitHub Models（免费 GPT，负责深度综合分析；需在 Secrets 配置 GITHUB_MODELS_TOKEN）
-GHM_KEY = (os.environ.get("GITHUB_MODELS_TOKEN") or "").strip()
-GHM_MODEL = (os.environ.get("GH_MODELS_MODEL") or "openai/gpt-4o").strip()
-GHM_BASE_URL = (os.environ.get("GH_MODELS_BASE_URL") or "https://models.github.ai/inference").strip().rstrip("/")
+# 深度分析优先用 Gemini（免费额度大 + Google 搜索原生集成；GitHub Models 已于 2026-07-30 退役，不再使用）
 
 GEN_DATE = datetime.date.today().strftime("%Y-%m-%d")
 GEN_DATETIME_CN = datetime.datetime.now().strftime("%Y-%m-%d %H:%M") + "（北京时间）"
@@ -640,63 +637,6 @@ def call_zhipu(prompt: str, search_query: str) -> str:
     raise RuntimeError(f"智谱调用失败（模型 {ZHIPU_MODEL}）: {last_err} {hint}")
 
 
-def call_ghm(prompt: str, max_tokens: int = 4000) -> str:
-    """调用 GitHub Models（OpenAI 兼容接口），负责高质量综合分析。"""
-    if not GHM_KEY:
-        raise RuntimeError("未配置 GITHUB_MODELS_TOKEN")
-    url = f"{GHM_BASE_URL}/chat/completions"
-    body = {
-        "model": GHM_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.4,
-        "max_tokens": max_tokens,
-    }
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    last_err = None
-    for attempt in range(1, 4):
-        try:
-            req = urllib.request.Request(url, data=data, headers={
-                "Authorization": f"Bearer {GHM_KEY}",
-                "Content-Type": "application/json",
-                "Accept": "application/vnd.github+json",
-            })
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-            try:
-                obj = json.loads(raw)
-            except Exception:
-                # 诊断：把实际返回的状态码/内容类型/响应体前 300 字符打出来，便于定位端点问题
-                ctype = resp.headers.get("Content-Type", "")
-                print(f"[global_scan] GitHub Models 非JSON响应: status={resp.status} type={ctype} body={raw[:300]!r}", file=sys.stderr)
-                raise
-            text = (((obj.get("choices") or [{}])[0].get("message", {}) or {}).get("content") or "").strip()
-            if text:
-                print(f"[global_scan] GitHub Models {GHM_MODEL} 生成成功（{len(text)} 字）")
-                return text
-            raise RuntimeError("返回空内容：" + json.dumps(obj, ensure_ascii=False)[:400])
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", errors="replace")[:500]
-            except Exception:
-                pass
-            last_err = f"HTTP {e.code}: {detail}"
-            print(f"[global_scan] GitHub Models 第 {attempt} 次失败: {last_err}", file=sys.stderr)
-            if e.code == 429:
-                time.sleep(45)
-                continue
-            if 400 <= e.code < 500:
-                raise RuntimeError(f"GitHub Models 客户端错误（检查 GITHUB_MODELS_TOKEN 是否有 Models:read 权限）: {last_err}")
-            time.sleep(min(30, 10 * attempt))
-            continue
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            print(f"[global_scan] GitHub Models 第 {attempt} 次失败: {e}", file=sys.stderr)
-            time.sleep(min(30, 10 * attempt))
-            continue
-    raise RuntimeError(f"GitHub Models 调用失败: {last_err}")
-
-
 # 行情直接走 Yahoo 免费接口（数字最可靠，不经过 LLM）
 YAHOO_SYMBOLS = [
     ("道琼斯指数", "^DJI"),
@@ -757,32 +697,6 @@ def build_retrieve_future_prompt() -> str:
         "（央行议息、经济数据发布、重磅财报、IPO、产业会议、监管节点、地缘时间点），输出 10—18 条清单，"
         "每条格式：`- 预计日期（北京时间，不确定写「日期待定」） | 事件描述（含关键数字或预期） | 状态（已确认/高可信预期/单一来源消息） | [来源](直达URL)`。"
         "只要清单，不要分析。禁止编造日期与事件。"
-    )
-
-
-def build_gpt_today_prompt(quotes_md: str, news_md: str) -> str:
-    return (
-        f"现在是 {GEN_DATETIME_CN}。你是顶级 A 股策略分析师。\n"
-        f"{STATUS_RULES}\n{CARD_TEMPLATE}\n{HARD_RULES}\n\n"
-        "下面是已获取的隔夜行情数据和检索到的原始新闻清单。**只允许使用这两部分材料中出现的事实与数字**"
-        "（可补充常识性产业逻辑，但禁止编造材料中不存在的数字、日期和链接）。\n\n"
-        "【隔夜行情】\n" + quotes_md + "\n\n【检索到的新闻】\n" + news_md + "\n\n"
-        f"任务：写出 6—10 个「影响今日（{GEN_DATE}）A 股走势」的深度因子卡片，按重要性排序，已确认排前。"
-        "只输出卡片本身，不要其他文字。"
-    )
-
-
-def build_gpt_nextday_prompt(quotes_md: str, events_md: str) -> str:
-    return (
-        f"现在是 {GEN_DATETIME_CN}，明天是 {NEXT_DATE}。你是顶级 A 股策略分析师。\n"
-        f"{STATUS_RULES}\n{CARD_TEMPLATE}\n{HARD_RULES}\n\n"
-        "下面是隔夜行情与未来事件清单。**只允许使用材料中的事实与数字**。\n\n"
-        "【隔夜行情】\n" + quotes_md + "\n\n【未来事件清单】\n" + events_md + "\n\n"
-        "任务：依次输出以下四个部分：\n"
-        f"## 影响【明日（{NEXT_DATE}）】走势的因子（6—10 个卡片，按重要性排序）\n\n"
-        "## 未来14天重要事件日历（Markdown 表格，列：北京时间 | 事件 | 状态 | 方向 | 评分(0-100)；评分必须有区分度，禁止全部相同）\n\n"
-        "## 高影响但低确定性事件（0—5 条：事件/目前证据/监控条件/下次核实时间）\n\n"
-        "## 本轮最容易被忽略的三个事件（是什么/为什么容易漏/如何验证）"
     )
 
 
@@ -942,9 +856,8 @@ def main() -> int:
     if not (ZHIPU_KEY or GEMINI_KEY):
         print("[global_scan] 未配置 ZHIPU_API_KEY 或 GEMINI_API_KEY，无法检索新闻。", file=sys.stderr)
         return 1
-    analyzer = f"GitHub Models {GHM_MODEL}" if GHM_KEY else ("智谱 GLM-4-Flash" if ZHIPU_KEY else "Gemini")
-    retriever = "智谱 GLM-4-Flash" if ZHIPU_KEY else "Gemini"
-    print(f"[global_scan] 开始生成 {GEN_DATE} 报告：检索={retriever}，深度分析={analyzer}")
+    analyzer = f"Gemini {MODEL}（联网搜索）" if GEMINI_KEY else "智谱 GLM-4-Flash"
+    print(f"[global_scan] 开始生成 {GEN_DATE} 报告：深度分析={analyzer}")
 
     def _gen(prompt: str, search_query: str) -> str:
         """检索/生成：优先智谱（web_search），失败且有 Gemini key 时本节回退 Gemini。"""
@@ -966,45 +879,37 @@ def main() -> int:
         print(f"[global_scan] 隔夜行情获取失败: {e}", file=sys.stderr)
         quotes_md = "（行情接口失败，请基于检索材料中的数字）"
 
-    # Step 1：检索今日新闻（智谱 web_search 联网检索）
+    # Step 1：今日因子 —— Gemini 原生联网搜索一次出深度卡片；仅智谱时两步走（先检索清单再写作）
     try:
-        news_md = _gen(
-            build_retrieve_today_prompt(),
-            f"{GEN_DATE} A股 盘前 要闻 政策 公告 隔夜美股 最新",
-        ).strip()
-        print(f"[global_scan] 今日新闻检索成功（{len(news_md)} 字）")
-    except Exception as e:  # noqa: BLE001
-        print(f"[global_scan] 今日新闻检索失败（继续）: {e}", file=sys.stderr)
-        news_md = "（新闻检索失败）"
-
-    # Step 2：今日因子深度综合（GPT-4o 优先；未配 GitHub Models 时回退智谱直出）
-    try:
-        if GHM_KEY:
-            today_md = call_ghm(build_gpt_today_prompt(quotes_md, news_md)).strip()
+        if GEMINI_KEY:
+            today_md = call_gemini(build_today_prompt(quotes_md)).strip()
         else:
-            today_md = _gen(build_today_prompt(quotes_md), f"{GEN_DATE} 今日A股 盘前 政策 北向资金").strip()
+            news_md = _gen(
+                build_retrieve_today_prompt(),
+                f"{GEN_DATE} A股 盘前 要闻 政策 公告 隔夜美股 最新",
+            ).strip()
+            today_md = _gen(
+                build_today_prompt(quotes_md + "\n\n【已检索到的新闻清单】\n" + news_md),
+                f"{GEN_DATE} 今日A股 盘前 政策 北向资金",
+            ).strip()
         print(f"[global_scan] 今日因子生成成功（{len(today_md)} 字）")
     except Exception as e:  # noqa: BLE001
         print(f"[global_scan] 今日因子生成失败（继续）: {e}", file=sys.stderr)
         today_md = "（本节生成失败）"
 
-    # Step 3：检索未来两周事件
+    # Step 2：明日因子 + 日历，同样策略
     try:
-        events_md = _gen(
-            build_retrieve_future_prompt(),
-            "未来一周 央行议息 经济数据发布 财报 IPO 产业会议 时间表",
-        ).strip()
-        print(f"[global_scan] 未来事件检索成功（{len(events_md)} 字）")
-    except Exception as e:  # noqa: BLE001
-        print(f"[global_scan] 未来事件检索失败（继续）: {e}", file=sys.stderr)
-        events_md = "（事件检索失败）"
-
-    # Step 4：明日因子 + 日历深度综合（GPT-4o 优先）
-    try:
-        if GHM_KEY:
-            nextday_md = call_ghm(build_gpt_nextday_prompt(quotes_md, events_md)).strip()
+        if GEMINI_KEY:
+            nextday_md = call_gemini(build_nextday_prompt(quotes_md)).strip()
         else:
-            nextday_md = _gen(build_nextday_prompt(quotes_md), f"{NEXT_DATE} 未来一周 央行议息 经济数据 财报 IPO").strip()
+            events_md = _gen(
+                build_retrieve_future_prompt(),
+                "未来一周 央行议息 经济数据发布 财报 IPO 产业会议 时间表",
+            ).strip()
+            nextday_md = _gen(
+                build_nextday_prompt(quotes_md + "\n\n【已检索到的未来事件清单】\n" + events_md),
+                f"{NEXT_DATE} 未来一周 央行议息 经济数据 财报 IPO",
+            ).strip()
         print(f"[global_scan] 明日因子与日历生成成功（{len(nextday_md)} 字）")
     except Exception as e:  # noqa: BLE001
         print(f"[global_scan] 明日因子与日历生成失败（继续）: {e}", file=sys.stderr)
