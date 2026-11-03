@@ -1,0 +1,47 @@
+name: 每日全球事件与资金流向扫描
+
+on:
+  # 北京时间每天 09:00（UTC 01:00）自动运行
+  schedule:
+    - cron: '0 1 * * *'
+  # 允许手动触发
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 用于将生成的报告提交回仓库 global_scan/
+
+jobs:
+  global-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 执行全球重大事件与资金流向深度扫描
+        env:
+          # 优先使用智谱 GLM-4-Flash（免费 + 实时联网检索）；未配置时回退 Gemini
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          ZHIPU_MODEL: ${{ vars.ZHIPU_MODEL || 'glm-4-flash' }}
+          ZHIPU_BASE_URL: ${{ vars.ZHIPU_BASE_URL }}
+          # Gemini 兜底配置
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3-flash-preview' }}
+          GEMINI_BASE_URL: ${{ vars.GEMINI_BASE_URL }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
+        run: python global_scan.py
+
+      - name: 上传报告产物（失败也可查）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-scan-${{ github.run_id }}
+          path: global_scan/
+          if-no-files-found: ignore
