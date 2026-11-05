@@ -19,6 +19,11 @@ from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_met
 
 logger = logging.getLogger(__name__)
 
+# PushPlus 内容上限是 2 万「字」（字符），必须以「渲染后的 HTML」为准判断，
+# 否则深色卡片的内联样式会把内容放大 2~3 倍，导致 code=999 被拒但 Actions 显示成功。
+PUSHPLUS_SAFE_CHARS = 18000
+PUSHPLUS_SAFE_BYTES = 30000
+
 
 # ---------------------------------------------------------------------------
 # iPhone 15 Pro 友好排版：Markdown -> HTML（PushPlus 以 html 模板渲染）
@@ -245,6 +250,44 @@ def _safe_markdown_to_html(content: str) -> str:
         return content
 
 
+def _blocks(md: str) -> list:
+    """按行切块；连续表格行合并成一块，避免表头和表体被拆到两条消息里。"""
+    lines = md.splitlines()
+    result, i = [], 0
+    while i < len(lines):
+        if lines[i].lstrip().startswith("|"):
+            j = i
+            while j < len(lines) and lines[j].lstrip().startswith("|"):
+                j += 1
+            result.append("\n".join(lines[i:j]))
+            i = j
+        else:
+            result.append(lines[i])
+            i += 1
+    return result
+
+
+def _chunk_by_rendered_length(md: str, max_chars: int = PUSHPLUS_SAFE_CHARS) -> list:
+    """按「渲染后 HTML 字符数」切分 Markdown，保证每一批都在 PushPlus 限制内。"""
+    if len(_safe_markdown_to_html(md)) <= max_chars:
+        return [md]
+    chunks, buf = [], ""
+    for block in _blocks(md):
+        candidate = (buf + "\n" + block) if buf else block
+        if len(_safe_markdown_to_html(candidate)) <= max_chars:
+            buf = candidate
+            continue
+        if buf:
+            chunks.append(buf)
+        if len(_safe_markdown_to_html(block)) <= max_chars:
+            buf = block
+        else:
+            buf = block[:max(1, max_chars // 2)]  # 极端情况：单行就超长，硬切
+    if buf:
+        chunks.append(buf)
+    return chunks or [md[:max(1, max_chars // 2)]]
+
+
 class PushplusSender:
     
     def __init__(self, config: Config):
@@ -301,24 +344,20 @@ class PushplusSender:
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
 
         try:
-            content_bytes = len(sanitized_content.encode('utf-8'))
-            if content_bytes > self._pushplus_max_bytes:
+            rendered = _safe_markdown_to_html(sanitized_content)
+            rendered_bytes = len(rendered.encode('utf-8'))
+            if (len(rendered) > PUSHPLUS_SAFE_CHARS
+                    or rendered_bytes > PUSHPLUS_SAFE_BYTES):
                 logger.info(
-                    "PushPlus 消息内容超长(%s字节/%s字符)，将分批发送",
-                    content_bytes,
-                    len(sanitized_content),
+                    "PushPlus 渲染后内容超长(%s字符/%s字节)，将分批发送",
+                    len(rendered), rendered_bytes,
                 )
                 return self._send_pushplus_chunked(
-                    api_url,
-                    sanitized_content,
-                    title,
-                    self._pushplus_max_bytes,
+                    api_url, sanitized_content, title, PUSHPLUS_SAFE_CHARS,
                 )
 
             return self._send_pushplus_message(
-                api_url,
-                sanitized_content,
-                title,
+                api_url, sanitized_content, title,
                 timeout_seconds=timeout_seconds,
             )
         except Exception as e:
@@ -334,6 +373,11 @@ class PushplusSender:
         timeout_seconds: Optional[float] = None,
     ) -> bool:
         html_content = _safe_markdown_to_html(content)
+        if len(html_content) > 20000:
+            logger.warning(
+                "PushPlus 单条 HTML 达 %s 字符，超过 2 万字上限，可能被服务端拒绝",
+                len(html_content),
+            )
         payload = {
             "token": self._pushplus_token,
             "title": title,
@@ -359,24 +403,28 @@ class PushplusSender:
         logger.error(f"PushPlus 请求失败: HTTP {response.status_code}")
         return False
 
-    def _send_pushplus_chunked(self, api_url: str, content: str, title: str, max_bytes: int) -> bool:
-        """分批发送长 PushPlus 消息，给 JSON payload 预留空间。"""
-        budget = max(1000, max_bytes - 1500)
-        chunks = chunk_content_by_max_bytes(content, budget, add_page_marker=True)
+    def _send_pushplus_chunked(self, api_url: str, content: str, title: str,
+                               max_chars: int = PUSHPLUS_SAFE_CHARS) -> bool:
+        """分批发送长 PushPlus 消息。
+
+        注意：这里必须传「原始 Markdown」给 _send_pushplus_message，由它渲染一次。
+        旧实现先转 HTML 再传入，会被二次渲染并转义成乱码，且长度翻倍导致 code=999。
+        """
+        chunks = _chunk_by_rendered_length(content, max(1000, max_chars - 400))
         total_chunks = len(chunks)
         success_count = 0
 
-        logger.info(f"PushPlus 分批发送：共 {total_chunks} 批")
+        logger.info(f"PushPlus 分批发送：共 {total_chunks} 批（按渲染后 HTML 长度切分）")
 
         for i, chunk in enumerate(chunks):
             chunk_title = f"{title} ({i+1}/{total_chunks})" if total_chunks > 1 else title
-            if self._send_pushplus_message(api_url, _safe_markdown_to_html(chunk), chunk_title):
+            if self._send_pushplus_message(api_url, chunk, chunk_title):
                 success_count += 1
                 logger.info(f"PushPlus 第 {i+1}/{total_chunks} 批发送成功")
             else:
                 logger.error(f"PushPlus 第 {i+1}/{total_chunks} 批发送失败")
 
             if i < total_chunks - 1:
-                time.sleep(1)
+                time.sleep(1.2)  # PushPlus 实名用户 1 分钟 5 条的频率限制
 
         return success_count == total_chunks

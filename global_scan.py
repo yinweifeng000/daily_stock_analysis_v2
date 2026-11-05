@@ -38,6 +38,10 @@ import datetime
 import urllib.request
 import urllib.error
 
+# 微信推送公共模块：iPhone 深色卡片排版 + 按「最终 HTML 长度」自动分段
+# PushPlus 上限 2 万字，整篇 HTML 一次发送会返回 code=999（Actions 绿灯但微信没消息）
+from pushplus_html import send_report
+
 # ---------- 配置 ----------
 GEMINI_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
 _KEYS_RAW = (os.environ.get("GEMINI_API_KEYS") or "").strip()
@@ -789,8 +793,10 @@ def fetch_overnight_table() -> str:
                 continue
             chg = f"{(price / prev - 1) * 100:+.2f}%" if prev else ""
             tstr = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%m-%d %H:%M UTC") if ts else ""
-            if sym == "^TNX":
-                price = round(price / 10, 3)  # ^TNX 是收益率×10
+            if sym == "^TNX" and price > 20:
+                # 仅当接口返回「收益率×10」的老口径时才换算；
+                # 新口径直接返回 4.89 这类数值，再除 10 会变成 0.489 的错误数据
+                price = round(price / 10, 3)
             rows.append((name, price, chg, tstr))
         except Exception as e:  # noqa: BLE001
             rows.append((name, "未检索到", "", type(e).__name__))
@@ -818,156 +824,38 @@ def build_retrieve_future_prompt() -> str:
     )
 
 
-def push_wechat(title: str, content: str) -> str:
-    if not PUSHPLUS_TOKEN:
-        return "跳过（未配置 PUSHPLUS_TOKEN）"
-    url = "https://www.pushplus.plus/send"
-    payload = {"token": PUSHPLUS_TOKEN, "title": title, "content": content}
-    if PUSHPLUS_TOPIC:
-        payload["topic"] = PUSHPLUS_TOPIC
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+# 微信推送与手机 HTML 排版统一由 pushplus_html.send_report 处理：
+# 按最终 HTML 字符数自动分段，单条 <= 18000 字符，逐条标注 (i/N)。
+
+
+def commit_report(out_path: str, label: str, subdir: str) -> bool:
+    """把报告提交回仓库（best-effort）；push 被并发提交拒绝时 rebase 后重试。"""
+    import subprocess
+
+    def _run(args):
+        return subprocess.run(args, capture_output=True, text=True, check=False)
+
     try:
-        req = urllib.request.Request(
-            url, data=body, headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            obj = json.loads(resp.read().decode("utf-8"))
-        if obj.get("code") == 200:
-            return "成功"
-        return f"失败(code={obj.get('code')}): {obj.get('data') or obj.get('msg')}"
+        _run(["git", "config", "user.email", "action@github.com"])
+        _run(["git", "config", "user.name", "github-actions"])
+        _run(["git", "add", out_path])
+        res = _run(["git", "commit", "-m", f"{label}: 添加 {GEN_DATE} 报告"])
+        if res.returncode != 0:
+            print(f"[{subdir}] 报告无变更，跳过提交")
+            return False
+        push = _run(["git", "push"])
+        if push.returncode != 0:
+            err = (push.stderr or "").strip()[:200]
+            print(f"[{subdir}] 首次 push 失败，rebase 后重试: {err}")
+            _run(["git", "pull", "--rebase", "origin", "main"])
+            push = _run(["git", "push"])
+        ok = push.returncode == 0
+        tail = "" if ok else f"（{(push.stderr or '').strip()[:200]}）"
+        print(f"[{subdir}] 报告提交仓库：{'成功' if ok else '失败'}{tail}")
+        return ok
     except Exception as e:  # noqa: BLE001
-        return f"异常: {e}"
-
-
-def _strip_code_fence(text: str) -> str:
-    """去掉报告中所有 ``` 代码围栏（保留围栏内的内容），避免破坏微信 HTML 排版。"""
-    t = text.strip()
-    # 成对围栏：保留内部内容
-    t = re.sub(r"```[a-zA-Z]*\s*\n(.*?)```", r"\1", t, flags=re.S)
-    # 残留的孤立围栏行
-    t = re.sub(r"^\s*```[a-zA-Z]*\s*$", "", t, flags=re.M)
-    return t.strip()
-
-
-def _inline(text: str) -> str:
-    """将 Markdown 行内语法转换为适合微信(手机)显示的 HTML。"""
-    text = re.sub(
-        r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
-        lambda m: (
-            f'<a href="{m.group(2)}" '
-            f'style="color:#4dabf7;text-decoration:none;border-bottom:1px solid #4dabf7;'
-            f'word-break:break-all;">{m.group(1)}</a>'
-        ),
-        text,
-    )
-
-    def _bare(m):
-        pre, url = m.group(1), m.group(2)
-        if pre in ('"', ']'):
-            return m.group(0)
-        a = (
-            f'<a href="{url}" '
-            f'style="color:#4dabf7;text-decoration:none;border-bottom:1px solid #4dabf7;'
-            f'word-break:break-all;">{url}</a>'
-        )
-        return (pre or "") + a
-
-    text = re.sub(r"(.)?(https?://[^\s<)]+)", _bare, text)
-    text = re.sub(r"\*\*(.+?)\*\*", r'<strong style="font-weight:700;color:#ffffff;">\1</strong>', text)
-    text = re.sub(
-        r"`([^`]+)`",
-        r'<code style="background:#1e2128;padding:1px 4px;border-radius:3px;'
-        r'font-size:13px;color:#ff7b72;">\1</code>',
-        text,
-    )
-    # 状态标注着色：【已确认】绿 / 【高可信预期】橙 / 【单一来源消息】【市场传闻】灰红
-    text = text.replace("【已确认】", '<strong style="color:#3fb950;font-weight:700;">【已确认】</strong>')
-    text = text.replace("【高可信预期】", '<strong style="color:#ffa940;font-weight:700;">【高可信预期】</strong>')
-    text = text.replace("【单一来源消息】", '<strong style="color:#c9d1d9;font-weight:700;">【单一来源消息】</strong>')
-    text = text.replace("【市场传闻】", '<strong style="color:#ff7b72;font-weight:700;">【市场传闻】</strong>')
-    return text
-
-
-def markdown_to_html(md: str) -> str:
-    """将 Markdown 报告渲染为 iPhone 15 Pro 友好的 HTML（PushPlus 用 HTML 渲染）。"""
-    md = _strip_code_fence(md)
-    lines = md.splitlines()
-    out = []
-    list_type = None
-    list_items = []
-
-    def flush_list():
-        nonlocal list_type, list_items
-        if list_type and list_items:
-            tag = "ul" if list_type == "ul" else "ol"
-            lis = "".join(f'<li style="margin:4px 0;">{it}</li>' for it in list_items)
-            out.append(f'<{tag} style="margin:6px 0;padding-left:20px;">{lis}</{tag}>')
-        list_type, list_items = None, []
-
-    for raw in lines:
-        line = raw.rstrip()
-        if not line.strip():
-            flush_list()
-            continue
-        if re.match(r"^\s*([-*_])\1{2,}\s*$", line):
-            flush_list()
-            out.append('<hr style="border:none;border-top:1px solid #2a2f37;margin:12px 0;">')
-            continue
-        m = re.match(r"^(#{1,4})\s+(.*)$", line)
-        if m:
-            flush_list()
-            level = len(m.group(1))
-            txt = _inline(m.group(2))
-            if level == 1:
-                out.append(f'<h1 style="font-size:20px;color:#ffa940;font-weight:700;border-bottom:2px solid #ffa940;padding-bottom:6px;margin:18px 0 10px;">{txt}</h1>')
-            elif level == 2:
-                out.append(f'<h2 style="font-size:17px;color:#5cc8ff;font-weight:700;border-left:4px solid #ffa940;padding-left:8px;margin:16px 0 8px;">{txt}</h2>')
-            elif level == 3:
-                out.append(f'<h3 style="font-size:15.5px;color:#ffa940;font-weight:700;margin:12px 0 6px;">{txt}</h3>')
-            else:
-                out.append(f'<h4 style="font-size:14.5px;color:#c9d1d9;font-weight:700;margin:10px 0 4px;">{txt}</h4>')
-            continue
-        if line.lstrip().startswith(">"):
-            flush_list()
-            out.append(f'<div style="border-left:3px solid #3a4150;padding:4px 10px;color:#9aa3ad;background:rgba(255,255,255,0.04);margin:6px 0;">{_inline(line.lstrip()[1:].strip())}</div>')
-            continue
-        lm = re.match(r"^\s*[-*]\s+(.*)$", line)
-        olm = re.match(r"^\s*\d+\.\s+(.*)$", line)
-        if lm:
-            if list_type != "ul":
-                flush_list()
-                list_type = "ul"
-            list_items.append(_inline(lm.group(1)))
-            continue
-        if olm:
-            if list_type != "ol":
-                flush_list()
-                list_type = "ol"
-            list_items.append(_inline(olm.group(1)))
-            continue
-        flush_list()
-        out.append(f'<p style="margin:6px 0;">{_inline(line)}</p>')
-
-    flush_list()
-    body = "".join(out)
-    wrapper = (
-        '<div style="max-width:100%;background:#111418;color:#e6e8eb;'
-        'font-family:-apple-system,BlinkMacSystemFont,'
-        '&quot;PingFang SC&quot;,&quot;Helvetica Neue&quot;,Arial,sans-serif;'
-        'font-size:15px;line-height:1.75;word-break:break-word;'
-        'padding:14px 14px 18px;border-radius:14px;">'
-        f"{body}"
-        "</div>"
-    )
-    return wrapper
-
-
-def make_summary(report: str) -> str:
-    """返回整篇报告的手机 HTML（含全部章节），超长则截断保护。"""
-    html = markdown_to_html(report)
-    if len(html) > 40000:
-        html = html[:39000] + '<p style="color:#9aa3ad;margin:6px 0;">（内容较长，已截断，完整版见仓库 global_scan 目录）</p></div>'
-    return html
+        print(f"[{subdir}] 报告提交仓库失败（已忽略）: {e}", file=sys.stderr)
+        return False
 
 
 def main() -> int:
@@ -1072,27 +960,24 @@ def main() -> int:
         f.write(report + "\n")
     print(f"[global_scan] 报告已写入 {out_path}（{len(report)} 字）")
 
-    status = push_wechat(f"全球事件与资金扫描·今日明日因子 {GEN_DATE}", make_summary(report))
-    print(f"[global_scan] 微信推送：{status}")
+    # 先把报告提交回仓库，保证微信里的「完整报告」链接点得开
+    commit_report(out_path, "docs(global-scan)", "global_scan")
 
-    # 尽量把报告提交回仓库（best-effort，失败不影响主流程）
-    try:
-        import subprocess
-        subprocess.run(["git", "config", "user.email", "action@github.com"], check=False)
-        subprocess.run(["git", "config", "user.name", "github-actions"], check=False)
-        subprocess.run(["git", "add", out_path], check=False)
-        res = subprocess.run(
-            ["git", "commit", "-m", f"docs(global-scan): 添加 {GEN_DATE} 全球事件扫描报告"],
-            capture_output=True, text=True, check=False,
-        )
-        if res.returncode == 0:
-            subprocess.run(["git", "push"], capture_output=True, text=True, check=False)
-            print("[global_scan] 报告已提交并推送至仓库")
-        else:
-            print("[global_scan] 无需提交或提交跳过（可能无变更/无推送权限）")
-    except Exception as e:  # noqa: BLE001
-        print(f"[global_scan] 报告提交仓库失败（已忽略）: {e}", file=sys.stderr)
-
+    detail_url = (
+        "https://github.com/yinweifeng000/daily_stock_analysis_v2/blob/main/"
+        f"global_scan/{GEN_DATE}.md"
+    )
+    result = send_report(
+        title=f"全球事件与资金扫描·今日明日因子 {GEN_DATE}",
+        markdown=report,
+        token=PUSHPLUS_TOKEN,
+        topic=PUSHPLUS_TOPIC,
+        detail_url=detail_url,
+    )
+    if not result["all_ok"]:
+        print("::error:: 微信推送未全部成功（" + str(result["success"]) + "/" + str(result["total"])
+              + " 条），请查看上方 [pushplus] 明细")
+        return 1
     return 0
 
 
