@@ -1,7 +1,7 @@
 name: 每日政策扫描与宏观解读
 
 on:
-  # 北京时间每天 18:00（UTC 10:00）自动运行
+  # 【定时·北京时间】每天 18:00（UTC 10:00），包含周末，不做交易日限制
   schedule:
     - cron: '0 10 * * *'
   # 允许手动触发
@@ -15,6 +15,11 @@ on:
 
 permissions:
   contents: write   # 用于将生成的报告提交回仓库 policy_digest/
+
+# 并发控制：避免定时积压时同一工作流并发运行、重复推送
+concurrency:
+  group: policy-scan
+  cancel-in-progress: false
 
 jobs:
   policy-scan:

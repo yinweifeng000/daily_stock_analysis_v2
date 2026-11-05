@@ -1,7 +1,7 @@
 name: 每日全球事件与资金流向扫描
 
 on:
-  # 交易日（周一至周五，且非法定节假日）北京时间 09:00（UTC 01:00）自动运行
+  # 【定时·北京时间】交易日 09:00（UTC 01:00，周一至周五）
   # 周末由 cron 的 1-5 排除；法定节假日由下方「交易日检查」步骤跳过。
   schedule:
     - cron: '0 1 * * 1-5'
@@ -10,6 +10,11 @@ on:
 
 permissions:
   contents: write   # 用于将生成的报告提交回仓库 global_scan/
+
+# 并发控制：避免定时积压时同一工作流并发运行、重复推送
+concurrency:
+  group: global-scan
+  cancel-in-progress: false
 
 jobs:
   global-scan:
