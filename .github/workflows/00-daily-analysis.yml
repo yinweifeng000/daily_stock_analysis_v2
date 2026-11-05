@@ -92,9 +92,10 @@ jobs:
           LLM_PROMPT_CACHE_TELEMETRY_ENABLED: ${{ vars.LLM_PROMPT_CACHE_TELEMETRY_ENABLED || secrets.LLM_PROMPT_CACHE_TELEMETRY_ENABLED }}
           LLM_PROMPT_CACHE_HINTS_ENABLED: ${{ vars.LLM_PROMPT_CACHE_HINTS_ENABLED || secrets.LLM_PROMPT_CACHE_HINTS_ENABLED }}
           LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: ${{ vars.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL || secrets.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL }}
-          # 渠道路由：gemini 为主，智谱 GLM-4-Flash 为兜底（免费+实时）；
+          # 渠道路由：DeepSeek（最新 V4.1-Flash）为主，Gemini / 智谱依次兜底；
+          # 三个渠道共用各自的 Secret，DeepSeek 只需配 DEEPSEEK_API_KEY 这一个。
           # 回退方法：把仓库 Variables 里的 LLM_CHANNELS 设为空字符串即可恢复纯 Gemini 旧行为。
-          LLM_CHANNELS: ${{ vars.LLM_CHANNELS || 'gemini,zhipu' }}
+          LLM_CHANNELS: ${{ vars.LLM_CHANNELS || 'deepseek,gemini,zhipu' }}
           # Modelflare：只需 MODELFLARE_KEY；以下渠道配置供高级覆盖。
           MODELFLARE_KEY: ${{ secrets.MODELFLARE_KEY }}
           LLM_MODELFLARE_PROTOCOL: ${{ vars.LLM_MODELFLARE_PROTOCOL || secrets.LLM_MODELFLARE_PROTOCOL }}
@@ -118,7 +119,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
-          GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
+          GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-3-flash-preview' }}
           GEMINI_REQUEST_DELAY: '3.0'
           
           # AIHubMix（优先于 OPENAI_API_KEY，自动适配 base_url，推荐国内用户）
@@ -167,13 +168,15 @@ jobs:
           LLM_GEMINI_ENABLED: ${{ vars.LLM_GEMINI_ENABLED || secrets.LLM_GEMINI_ENABLED || 'true' }}
           LLM_GEMINI_EXTRA_HEADERS: ${{ vars.LLM_GEMINI_EXTRA_HEADERS || secrets.LLM_GEMINI_EXTRA_HEADERS }}
 
-          LLM_DEEPSEEK_PROTOCOL: ${{ vars.LLM_DEEPSEEK_PROTOCOL || secrets.LLM_DEEPSEEK_PROTOCOL }}
+          # DeepSeek 主渠道（最新 DeepSeek-V4.1-Flash-1017）：
+          # 只需在 Secrets 配 DEEPSEEK_API_KEY；如需更强推理档，把 DEEPSEEK_MODEL 改成 deepseek-v4-pro。
+          LLM_DEEPSEEK_PROTOCOL: ${{ vars.LLM_DEEPSEEK_PROTOCOL || secrets.LLM_DEEPSEEK_PROTOCOL || 'deepseek' }}
           LLM_DEEPSEEK_API_SURFACE: ${{ vars.LLM_DEEPSEEK_API_SURFACE || secrets.LLM_DEEPSEEK_API_SURFACE }}
-          LLM_DEEPSEEK_BASE_URL: ${{ vars.LLM_DEEPSEEK_BASE_URL || secrets.LLM_DEEPSEEK_BASE_URL }}
-          LLM_DEEPSEEK_API_KEY: ${{ secrets.LLM_DEEPSEEK_API_KEY }}
-          LLM_DEEPSEEK_API_KEYS: ${{ secrets.LLM_DEEPSEEK_API_KEYS }}
-          LLM_DEEPSEEK_MODELS: ${{ vars.LLM_DEEPSEEK_MODELS || secrets.LLM_DEEPSEEK_MODELS }}
-          LLM_DEEPSEEK_ENABLED: ${{ vars.LLM_DEEPSEEK_ENABLED || secrets.LLM_DEEPSEEK_ENABLED }}
+          LLM_DEEPSEEK_BASE_URL: ${{ vars.LLM_DEEPSEEK_BASE_URL || secrets.LLM_DEEPSEEK_BASE_URL || 'https://api.deepseek.com' }}
+          LLM_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || secrets.LLM_DEEPSEEK_API_KEY }}
+          LLM_DEEPSEEK_API_KEYS: ${{ secrets.DEEPSEEK_API_KEYS || secrets.LLM_DEEPSEEK_API_KEYS }}
+          LLM_DEEPSEEK_MODELS: ${{ vars.DEEPSEEK_MODEL || vars.LLM_DEEPSEEK_MODELS || secrets.LLM_DEEPSEEK_MODELS || 'deepseek-flash' }}
+          LLM_DEEPSEEK_ENABLED: ${{ vars.LLM_DEEPSEEK_ENABLED || secrets.LLM_DEEPSEEK_ENABLED || 'true' }}
           LLM_DEEPSEEK_EXTRA_HEADERS: ${{ vars.LLM_DEEPSEEK_EXTRA_HEADERS || secrets.LLM_DEEPSEEK_EXTRA_HEADERS }}
 
           LLM_AIHUBMIX_PROTOCOL: ${{ vars.LLM_AIHUBMIX_PROTOCOL || secrets.LLM_AIHUBMIX_PROTOCOL }}

@@ -58,7 +58,12 @@ jobs:
       - name: 执行全球重大事件与资金流向深度扫描
         if: github.event_name != 'schedule' || steps.trading_day.outputs.is_trading_day == 'true'
         env:
-          # 优先使用智谱 GLM-4-Flash（免费 + 实时联网检索）；未配置时回退 Gemini
+          # 优先使用 DeepSeek 最新模型 deepseek-flash（官方 Search API 实时联网检索）
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL || 'deepseek-flash' }}
+          DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL || 'https://api.deepseek.com' }}
+          DEEPSEEK_THINKING: ${{ vars.DEEPSEEK_THINKING || 'disabled' }}
+          # 智谱 GLM-4-Flash 二级兜底（免费 + 实时联网检索）
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
           ZHIPU_MODEL: ${{ vars.ZHIPU_MODEL || 'glm-4-flash' }}
           ZHIPU_BASE_URL: ${{ vars.ZHIPU_BASE_URL }}

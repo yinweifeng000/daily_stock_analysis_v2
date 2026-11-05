@@ -1719,7 +1719,9 @@ class Config:
                 elif anthropic_api_keys:
                     litellm_model = f'anthropic/{_anthropic_model_name}'
                 elif deepseek_api_keys:
-                    litellm_model = 'deepseek/deepseek-chat'
+                    # deepseek-flash = DeepSeek-V4.1-Flash-1017（最新）；
+                    # 旧名 deepseek-chat / deepseek-flash 已于 2026-07-24 退役。
+                    litellm_model = 'deepseek/deepseek-flash'
                     inferred_legacy_deepseek_model = True
                 elif openai_api_keys:
                     # For openai-compatible models, add prefix only if not already prefixed
@@ -1738,12 +1740,12 @@ class Config:
         if (
             inferred_legacy_deepseek_model
             and llm_models_source == "legacy_env"
-            and litellm_model == 'deepseek/deepseek-chat'
+            and litellm_model == 'deepseek/deepseek-flash'
         ):
-            logger.warning(
-                "Deprecation warning:\n"
-                "deepseek-chat will be deprecated on 2026-07-24,\n"
-                "please migrate to deepseek-v4-flash."
+            logger.info(
+                "DeepSeek key detected without an explicit model; using the latest "
+                "deepseek-flash (V4.1-Flash). Set LITELLM_MODEL / LLM_DEEPSEEK_MODELS "
+                "to override (e.g. deepseek-v4-pro)."
             )
 
         generation_backend = (
@@ -2002,7 +2004,7 @@ class Config:
             # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).
             # base_url is auto-set to aihubmix.com/v1 when AIHUBMIX_KEY is used and no explicit
             # OPENAI_BASE_URL override is provided.
-            # Model names match upstream (e.g. gemini-3.1-pro-preview, gpt-5.5, deepseek-v4-flash).
+            # Model names match upstream (e.g. gemini-3.1-pro-preview, gpt-5.5, deepseek-flash).
             openai_api_key=openai_api_keys[0] if openai_api_keys else None,
             openai_base_url=openai_base_url,
             openai_model=_openai_model_name,

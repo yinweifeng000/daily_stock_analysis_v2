@@ -3,16 +3,22 @@
 """
 每日政策扫描与宏观解读 (GitHub Action 版)
 ================================================
-- 优先使用 智谱 GLM-4-Flash（免费 + 内置 web_search 实时联网检索）扫描 8 大部委官网政策 + 全球事件/科学论文/国际政策
-- 未配置智谱 key 时，自动回退到 Gemini + Google Search 实现（需 GEMINI_API_KEY）
+- 优先使用 DeepSeek 最新模型 deepseek-flash（V4.1-Flash-1017）+ 官方 Search API 实时联网检索，
+  扫描 8 大部委官网政策 + 全球事件/科学论文/国际政策
+- DeepSeek 失败时自动降级：智谱 GLM-4-Flash（免费 + web_search）→ Gemini（Google Search）
 - 三视角深度解读：资深交易员 / 宏观经济分析师 / 公司基本面研究员
 - 输出落盘 policy_digest/YYYY-MM-DD.md
 - 精简摘要推送微信 (PushPlus)
 
 依赖：仅标准库（urllib / json），无需第三方包
-环境变量（二选一即可）：
-  [智谱 GLM-4-Flash，推荐，免费且实时联网]
-  ZHIPU_API_KEY     (必填，智谱 API Key，申请：https://open.bigmodel.cn/usercenter/apikeys)
+环境变量（三选一，按优先级自动降级）：
+  [DeepSeek，推荐，最新 V4.1-Flash]
+  DEEPSEEK_API_KEY   (DeepSeek API Key，申请：https://platform.deepseek.com/api_keys)
+  DEEPSEEK_MODEL     (选填，默认 deepseek-flash；可设 deepseek-v4-pro 使用更强推理档)
+  DEEPSEEK_BASE_URL  (选填，默认 https://api.deepseek.com)
+  DEEPSEEK_THINKING  (选填，默认 disabled；设 enabled 开启思考模式，更慢更贵)
+  [智谱 GLM-4-Flash 兜底，免费且实时联网]
+  ZHIPU_API_KEY     (智谱 API Key，申请：https://open.bigmodel.cn/usercenter/apikeys)
   ZHIPU_MODEL       (选填，默认 glm-4-flash)
   ZHIPU_BASE_URL    (选填，默认 https://open.bigmodel.cn/api/paas/v4)
   [Gemini 兜底]
@@ -180,6 +186,120 @@ def _zhipu_request(url: str, body: dict, key: str) -> dict:
     )
     with urllib.request.urlopen(req, timeout=180) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+# ---------- DeepSeek（最新 V4.1-Flash，优先级最高） ----------
+DEEPSEEK_KEY = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+DEEPSEEK_MODEL = (os.environ.get("DEEPSEEK_MODEL") or "deepseek-flash").strip()
+DEEPSEEK_BASE_URL = (os.environ.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").strip().rstrip("/")
+DEEPSEEK_THINKING = (os.environ.get("DEEPSEEK_THINKING") or "disabled").strip().lower()
+
+DEEPSEEK_SEARCH_QUERIES = [
+    f"{GEN_DATE} 中国 国务院 发改委 财政部 央行 证监会 最新政策 发布",
+    f"{GEN_DATE} A股 政策 受益板块 影响资金规模 机构解读",
+    f"{GEN_DATE} 国际重大事件 美联储 地缘政治 全球市场 最新",
+    f"{GEN_DATE} 科学论文 重大突破 Nature Science 技术进展",
+]
+
+
+def _deepseek_request(url: str, body: dict, timeout: int = 180) -> dict:
+    """DeepSeek 通用 POST（Search API 与 chat/completions 共用，OpenAI 兼容格式）。"""
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {DEEPSEEK_KEY}"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def deepseek_search(query: str, count: int = 8) -> str:
+    """调用 DeepSeek 官方 Search API，返回带真实 URL / 日期的可追溯检索材料。"""
+    obj = _deepseek_request(
+        f"{DEEPSEEK_BASE_URL}/v1/tools/search",
+        {"query": query[:128], "count": count, "need_content": False},
+        timeout=60,
+    )
+    lines = []
+    for r in (obj.get("results") or []):
+        title = (r.get("title") or "").strip()
+        url = (r.get("url") or "").strip()
+        date = (r.get("date") or "")[:10]
+        summary = (r.get("summary") or r.get("snippet") or "").strip().replace("\n", " ")
+        if not (title or url):
+            continue
+        head = f"- [{title or url}]({url})" if url else f"- {title}"
+        if date:
+            head += f"（{date}）"
+        if summary:
+            head += f"：{summary[:420]}"
+        lines.append(head)
+    return "\n".join(lines) if lines else "（本次检索无可用结果）"
+
+
+def call_deepseek(prompt: str, queries=None) -> str:
+    """DeepSeek deepseek-flash：先官方 Search API 实时检索，再把真实材料注入提示词生成报告。"""
+    if not DEEPSEEK_KEY:
+        raise RuntimeError("未配置 DEEPSEEK_API_KEY。请在仓库 Secrets 中配置。")
+    blocks = []
+    for q in (queries or DEEPSEEK_SEARCH_QUERIES):
+        try:
+            blocks.append(f"### 检索：{q}\n{deepseek_search(q)}")
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", errors="replace")[:300]
+            except Exception:
+                pass
+            raise RuntimeError(f"DeepSeek Search HTTP {e.code}: {detail}")
+        except Exception as e:
+            print(f"[policy_scan] DeepSeek 检索「{q}」失败（继续）: {e}", file=sys.stderr)
+    materials = "\n\n".join(blocks) or "（联网检索暂无结果，请明确标注信息不确定性）"
+    enriched = (
+        prompt
+        + "\n\n【DeepSeek 实时联网检索材料｜务必优先基于以下真实材料作答；"
+          "每条政策/事件须附材料中的真实原文链接，禁止编造 URL 与数字】\n\n"
+        + materials
+    )
+    thinking_on = DEEPSEEK_THINKING == "enabled"
+    body = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [{"role": "user", "content": enriched}],
+        "max_tokens": 8000,
+        "thinking": {"type": "enabled" if thinking_on else "disabled"},
+    }
+    if not thinking_on:
+        body["temperature"] = 0.3  # 思考模式下 temperature 无效，仅非思考模式设置
+    last_err = None
+    for attempt in range(1, 3):
+        try:
+            obj = _deepseek_request(f"{DEEPSEEK_BASE_URL}/chat/completions", body, timeout=300)
+            msg = (obj.get("choices") or [{}])[0].get("message", {}) or {}
+            text = (msg.get("content") or "").strip()
+            if text:
+                print(f"[policy_scan] DeepSeek {DEEPSEEK_MODEL} 生成成功（{len(text)} 字，联网检索 {len(blocks)} 组）")
+                return text
+            raise RuntimeError("DeepSeek 返回空内容：" + json.dumps(obj, ensure_ascii=False)[:500])
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", errors="replace")[:600]
+            except Exception:
+                pass
+            last_err = f"HTTP {e.code}: {detail}"
+            print(f"[policy_scan] DeepSeek 第 {attempt} 次失败: {last_err}", file=sys.stderr)
+            if 400 <= e.code < 500 and e.code != 429:
+                raise RuntimeError(f"DeepSeek 客户端错误（检查 API Key / 余额 / 模型名）: {last_err}")
+            if attempt < 2:
+                time.sleep(15 if e.code == 429 else 5)
+                continue
+        except Exception as e:
+            last_err = str(e)
+            print(f"[policy_scan] DeepSeek 第 {attempt} 次失败: {e}", file=sys.stderr)
+            if attempt < 2:
+                time.sleep(5)
+                continue
+    raise RuntimeError(f"DeepSeek 调用失败（{DEEPSEEK_MODEL}）: {last_err}")
 
 
 def call_zhipu(prompt: str) -> str:
@@ -404,28 +524,40 @@ def make_summary(report: str) -> str:
 
 
 def main() -> int:
-    if ZHIPU_KEY:
+    if DEEPSEEK_KEY:
+        provider, model_name = "DeepSeek", DEEPSEEK_MODEL
+    elif ZHIPU_KEY:
         provider, model_name = "智谱 GLM-4-Flash", ZHIPU_MODEL
     elif GEMINI_KEY:
         provider, model_name = "Gemini", MODEL
     else:
-        print("[policy_scan] 未配置 ZHIPU_API_KEY 或 GEMINI_API_KEY，无法生成报告。", file=sys.stderr)
+        print("[policy_scan] 未配置 DEEPSEEK_API_KEY / ZHIPU_API_KEY / GEMINI_API_KEY，无法生成报告。", file=sys.stderr)
         return 1
     print(f"[policy_scan] 开始生成 {GEN_DATE} 政策扫描报告，提供方={provider}，模型={model_name}")
-    try:
-        if ZHIPU_KEY:
-            try:
-                report = call_zhipu(build_prompt())
-            except Exception as e:  # noqa: BLE001
-                if GEMINI_KEY:
-                    print(f"[policy_scan] 智谱调用失败，回退 Gemini: {e}", file=sys.stderr)
-                    report = call_gemini(build_prompt())
-                else:
-                    raise
-        else:
-            report = call_gemini(build_prompt())
-    except Exception as e:  # noqa: BLE001
-        print(f"[policy_scan] 生成失败: {e}", file=sys.stderr)
+
+    # 三级降级：DeepSeek（最新 V4.1-Flash + 官方联网）→ 智谱 → Gemini
+    prompt = build_prompt()
+    report = None
+    errors = []
+    if DEEPSEEK_KEY:
+        try:
+            report = call_deepseek(prompt)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"DeepSeek: {e}")
+            print(f"[policy_scan] DeepSeek 调用失败，回退下一模型: {e}", file=sys.stderr)
+    if report is None and ZHIPU_KEY:
+        try:
+            report = call_zhipu(prompt)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"智谱: {e}")
+            print(f"[policy_scan] 智谱调用失败，回退 Gemini: {e}", file=sys.stderr)
+    if report is None and GEMINI_KEY:
+        try:
+            report = call_gemini(prompt)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Gemini: {e}")
+    if report is None:
+        print(f"[policy_scan] 全部模型调用失败: {' | '.join(errors)}", file=sys.stderr)
         return 1
 
     out_dir = "policy_digest"
