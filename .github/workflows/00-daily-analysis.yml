@@ -1,15 +1,11 @@
 name: 每日股票分析
 
 on:
-  # 【定时·北京时间】交易日 11:30（上午收盘）/ 15:00（下午收盘）
-  # cron 使用 UTC（北京 = UTC+8）；1-5 = 周一至周五。
-  # 法定节假日由应用内 TRADING_DAY_CHECK_ENABLED（默认 true）的交易日历检查自动跳过，不推送。
-  # 手动触发（workflow_dispatch）不受定时限制，可勾 force_run 强制执行。
-  schedule:
-    - cron: '30 3 * * 1-5'     # UTC 03:30 = 北京时间 11:30
-    - cron: '0 7 * * 1-5'      # UTC 07:00 = 北京时间 15:00
-  
-  # 手动触发
+  # 【触发方式变更】GitHub Actions 免费版 schedule 连续多天延迟 6~8 小时并漏触发，已弃用仓库内置 cron。
+  # 改由 WorkBuddy 本机定时自动化按北京时间调用 workflow_dispatch 精确触发，
+  # 自动化内含「今天已成功推送则跳过」的幂等检查，避免重复推送微信。
+  # 北京时间 11:30 / 15:00；周末与法定节假日由应用内 TRADING_DAY_CHECK_ENABLED 跳过。
+  # 自动化触发时传 inputs.mode=market-only（与原先定时触发的行为一致）。
   workflow_dispatch:
     inputs:
       mode:

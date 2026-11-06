@@ -1,10 +1,10 @@
 name: 每日政策扫描与宏观解读
 
 on:
-  # 【定时·北京时间】每天 18:00（UTC 10:00），包含周末，不做交易日限制
-  schedule:
-    - cron: '0 10 * * *'
-  # 允许手动触发
+  # 【触发方式变更】GitHub Actions 免费版 schedule 连续多天延迟 6~8 小时并漏触发，已弃用仓库内置 cron。
+  # 改由 WorkBuddy 本机定时自动化按北京时间调用 workflow_dispatch 精确触发，
+  # 自动化内含「今天已成功推送则跳过」的幂等检查，避免重复推送微信。
+  # 北京时间每天 18:00（含周末，不做交易日限制）。
   workflow_dispatch:
     inputs:
       force_run:
