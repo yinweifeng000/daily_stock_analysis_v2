@@ -1,8 +1,7 @@
 name: Network Smoke
 
 on:
-  schedule:
-    - cron: '0 2 * * 1-5'
+  # GitHub 内置 cron 已弃用（延迟 6~8 小时）；仅保留手动触发，避免无关的延迟运行
   workflow_dispatch:
 
 concurrency:

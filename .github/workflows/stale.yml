@@ -1,13 +1,10 @@
 # 自动关闭过期的 Issues 和 PR
-# 每天检查一次，标记长时间无响应的 issues/PRs
+# 手动触发时检查，标记长时间无响应的 issues/PRs
 
 name: Stale Issues & PRs
 
 on:
-  schedule:
-    # 每天 UTC 0:00（北京时间 8:00）检查一次
-    - cron: '0 0 * * *'
-  # 支持手动触发
+  # GitHub 内置 cron 已弃用（延迟 6~8 小时）；需要时手动触发即可
   workflow_dispatch:
 
 permissions:
